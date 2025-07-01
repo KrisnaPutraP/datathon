@@ -51,27 +51,35 @@ def make_datasets(tokenizer):
 
 
 def train():
+    import torch
     tokenizer = load_tokenizer()
 
-    # ---- 4‑bit quantization config ----
-    bnb_cfg = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype="bfloat16" if tokenizer.backend_kwargs.get("torch_dtype_str") == "bfloat16" else "float16",
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-    )
+    # ---------- deteksi lingkungan ----------
+    has_cuda = torch.cuda.is_available()
+    bf16_ok  = has_cuda and torch.cuda.is_bf16_supported()
+
+    # ---------- 4-bit / 8-bit konfigurasi ----------
+    if has_cuda:                                         # → GPU: pakai 4-bit QLoRA
+        from bitsandbytes import BitsAndBytesConfig
+        bnb_cfg = BitsAndBytesConfig(
+            load_in_4bit      = True,
+            bnb_4bit_compute_dtype = "bfloat16" if bf16_ok else "float16",
+            bnb_4bit_use_double_quant = True,
+            bnb_4bit_quant_type = "nf4",
+        )
+        load_kwargs = dict(quantization_config=bnb_cfg, device_map="auto")
+    else:                                               # → CPU-only: full fp16 (bisa lama)
+        load_kwargs = dict(device_map={"": "cpu"}, torch_dtype=torch.float16)
 
     base_model = AutoModelForCausalLM.from_pretrained(
         config.BASE_MODEL_PATH,
-        quantization_config=bnb_cfg,
-        device_map="auto",
+        **load_kwargs
     )
 
-    # ---- apply LoRA ----
+    # ---------- PEFT LoRA ----------
     lora_cfg = LoraConfig(
-        r=8,
-        lora_alpha=16,
-        target_modules=["q_proj","v_proj"],
+        r=8, lora_alpha=16,
+        target_modules=["q_proj", "v_proj"],
         lora_dropout=0.05,
         bias="none",
         task_type="CAUSAL_LM",
@@ -79,26 +87,23 @@ def train():
     model = get_peft_model(base_model, lora_cfg)
     model.print_trainable_parameters()
 
-    # ---- Dataset ----
+    # ---------- Dataset ----------
     token_ds = make_datasets(tokenizer)
-
-    # ---- Data collator ----
     data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
 
-    # ---- TrainingArguments ----
+    # ---------- TrainingArguments ----------
     training_args = TrainingArguments(
         output_dir=str(config.OUTPUT_DIR),
         per_device_train_batch_size=config.BATCH_SIZE,
         gradient_accumulation_steps=config.GRAD_ACCUM,
-        evaluation_strategy="steps",
-        eval_steps=200,
-        save_strategy="steps",
-        save_steps=200,
+        eval_strategy="steps",     eval_steps=200,
+        save_strategy="steps",           save_steps=200,
         logging_steps=50,
         num_train_epochs=config.EPOCHS,
         learning_rate=config.LR,
-        bf16=True,  # use fp16 if your GPU doesn’t support bfloat16
-        report_to="none",  # disable wandb etc.
+        bf16 = bf16_ok,                  # true hanya jika didukung
+        fp16 = (has_cuda and not bf16_ok),
+        report_to="none",
     )
 
     trainer = Trainer(
@@ -111,7 +116,8 @@ def train():
     )
 
     trainer.train()
-    # save final LoRA adapter & tokenizer
+
+    # ---------- simpan LoRA adapter ----------
     model.save_pretrained(config.OUTPUT_DIR)
     tokenizer.save_pretrained(config.OUTPUT_DIR)
     print(f"LoRA adapter saved to {config.OUTPUT_DIR}")
