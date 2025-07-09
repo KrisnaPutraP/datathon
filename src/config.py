@@ -15,9 +15,9 @@ BASE_MODEL_PATH = MODEL_DIR / BASE_MODEL_NAME  # local dir (no internet)
 OUTPUT_DIR = MODEL_DIR / "mistral-copywriter-lora"
 
 # Hyper‑params (edit freely)
-LR              = 2e-4
+LR              = 3e-5
 BATCH_SIZE      = 2         # per device
 GRAD_ACCUM      = 16        # effective BS 32
 EPOCHS          = 3
-MAX_SEQ_LEN     = 384       # tokens – small, enough for short prompt+response
+MAX_SEQ_LEN     = 768       # tokens – small, enough for short prompt+response
 VALID_SPLIT     = 0.1       # 10 % dev/val
