@@ -1,5 +1,7 @@
 import argparse, os
 from pathlib import Path
+import evaluate
+from bert_score import score as bert_score
 
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"  # fully offline
 
@@ -66,6 +68,23 @@ def make_datasets(tokenizer):
 # training loop
 # -------------------------------------------------------------------------
 
+rouge = evaluate.load("rouge")
+
+def compute_metrics(eval_pred):
+    logits, labels = eval_pred
+    preds = logits.argmax(-1)
+
+    # decode batch -> list[str]
+    pred_text = tokenizer.batch_decode(preds, skip_special_tokens=True)
+    label_text = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+    # ROUGE-L
+    rouge_l = rouge.compute(predictions=pred_text,
+                            references=label_text)["rougeL"]
+    # BERTScore F1
+    _, _, f1 = bert_score(pred_text, label_text, lang="en")
+    return {"rougeL": rouge_l, "bert_f1": f1.mean().item()}
+
 def train():
     tokenizer = load_tokenizer()
 
@@ -126,6 +145,7 @@ def train():
         eval_dataset=token_ds["validation"],
         data_collator=data_collator,
         tokenizer=tokenizer,
+        compute_metrics=compute_metrics,
     )
 
     trainer.train()
