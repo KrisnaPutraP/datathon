@@ -1,37 +1,38 @@
-import argparse, os
-from pathlib import Path
-import evaluate
-from bert_score import score as bert_score
+import argparse
+import os
 
-os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"  # fully offline
-
+import numpy as np
 import torch
+from bert_score import score as bert_score
 from datasets import load_dataset
+from peft import LoraConfig, get_peft_model
 from transformers import (
-    AutoTokenizer, AutoModelForCausalLM,
-    TrainingArguments, Trainer, BitsAndBytesConfig,
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    Trainer,
+    TrainingArguments,
     default_data_collator,
 )
-from peft import LoraConfig, get_peft_model
 
 from src import config, utils
 
-# -------------------------------------------------------------------------
-# helpers
-# -------------------------------------------------------------------------
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+tokenizer = None
+
 
 def wrap_inst(prompt: str, response: str = "") -> str:
-    """Apply Mistral‑Instruct chat template."""
-    return f"<s>[INST] {prompt} [/INST] {response}</s>"
+    """Template Mistral-Instruct dengan instruksi empat-baris."""
+    return (
+        f"<s>[INST] {prompt}\n\n"
+        f"Jawablah persis 4 baris dengan format COPY:, HOST:, TIME:, BUNDLE:. [/INST] "
+        f"{response}</s>"
+    )
 
-
-# -------------------------------------------------------------------------
-# data functions
-# -------------------------------------------------------------------------
 
 def prepare_data():
     config.DATA_DIR.mkdir(exist_ok=True, parents=True)
-    utils.build_dataset()
+    utils.build_full_dataset()
 
 
 def load_tokenizer():
@@ -41,58 +42,76 @@ def load_tokenizer():
     return tok
 
 
-def make_datasets(tokenizer):
+def make_datasets(tok):
     data_files = {"train": str(config.TRAIN_FILE), "validation": str(config.VALID_FILE)}
     ds = load_dataset("json", data_files=data_files)
 
     def tokenize_fn(record):
         full_text = wrap_inst(record["prompt"], record["response"])
-        toks = tokenizer(
+        toks = tok(
             full_text,
             truncation=True,
             max_length=config.MAX_SEQ_LEN,
             padding="max_length",
         )
-        prompt_only = wrap_inst(record["prompt"])  # w/out response
-        prompt_len  = len(tokenizer(prompt_only, add_special_tokens=False)["input_ids"])
+        prompt_len = len(
+            tok(wrap_inst(record["prompt"]), add_special_tokens=False)["input_ids"]
+        )
         labels = toks["input_ids"].copy()
-        labels[:prompt_len] = [-100] * prompt_len  # mask loss on prompt
+        labels[:prompt_len] = [-100] * prompt_len
         toks["labels"] = labels
         return toks
 
-    token_ds = ds.map(tokenize_fn, batched=False, remove_columns=["prompt", "response"])
-    return token_ds
+    return ds.map(tokenize_fn, batched=False, remove_columns=["prompt", "response"])
 
 
-# -------------------------------------------------------------------------
-# training loop
-# -------------------------------------------------------------------------
+def _first_line(texts):
+    return [t.splitlines()[0] if t else "" for t in texts]
 
-rouge = evaluate.load("rouge")
+
+def _field(texts, prefix):
+    out = []
+    for t in texts:
+        for line in t.splitlines():
+            if line.startswith(prefix):
+                out.append(line[len(prefix) :].strip())
+                break
+        else:
+            out.append("∅")
+    return out
+
 
 def compute_metrics(eval_pred):
     logits, labels = eval_pred
     preds = logits.argmax(-1)
-
-    # decode batch -> list[str]
     pred_text = tokenizer.batch_decode(preds, skip_special_tokens=True)
     label_text = tokenizer.batch_decode(labels, skip_special_tokens=True)
+    _, _, f1 = bert_score(_first_line(pred_text), _first_line(label_text), lang="id")
+    acc_host = np.mean(
+        np.array(_field(pred_text, "HOST:")) == np.array(_field(label_text, "HOST:"))
+    )
+    acc_time = np.mean(
+        np.array(_field(pred_text, "TIME:")) == np.array(_field(label_text, "TIME:"))
+    )
+    acc_bundle = np.mean(
+        np.array(_field(pred_text, "BUNDLE:")) == np.array(_field(label_text, "BUNDLE:"))
+    )
+    return {
+        "bert_f1": f1.mean().item(),
+        "acc_host": acc_host,
+        "acc_time": acc_time,
+        "acc_bundle": acc_bundle,
+    }
 
-    # ROUGE-L
-    rouge_l = rouge.compute(predictions=pred_text,
-                            references=label_text)["rougeL"]
-    # BERTScore F1
-    _, _, f1 = bert_score(pred_text, label_text, lang="en")
-    return {"rougeL": rouge_l, "bert_f1": f1.mean().item()}
 
 def train():
+    global tokenizer
     tokenizer = load_tokenizer()
 
-    # ---- device & quantisation settings ----------------------------------
     has_cuda = torch.cuda.is_available()
-    bf16_ok  = has_cuda and torch.cuda.is_bf16_supported()
+    bf16_ok = has_cuda and torch.cuda.is_bf16_supported()
 
-    if has_cuda:  # QLoRA 4‑bit
+    if has_cuda:
         bnb_cfg = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_compute_dtype="bfloat16" if bf16_ok else "float16",
@@ -100,29 +119,23 @@ def train():
             bnb_4bit_quant_type="nf4",
         )
         load_kwargs = dict(quantization_config=bnb_cfg, device_map="auto")
-    else:  # CPU fallback
+    else:
         load_kwargs = dict(device_map={"": "cpu"}, torch_dtype=torch.float16)
 
     base_model = AutoModelForCausalLM.from_pretrained(config.BASE_MODEL_PATH, **load_kwargs)
-
-    # ---- PEFT LoRA --------------------------------------------------------
     lora_cfg = LoraConfig(
-        r=8, lora_alpha=16,
+        r=8,
+        lora_alpha=16,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj"],
         lora_dropout=0.05,
         bias="none",
         task_type="CAUSAL_LM",
     )
     model = get_peft_model(base_model, lora_cfg)
-    model.print_trainable_parameters()
 
-    # ---- dataset & collator ---------------------------------------------
     token_ds = make_datasets(tokenizer)
-
-    # use default_data_collator so our custom labels stay intact
     data_collator = default_data_collator
 
-    # ---- training arguments ---------------------------------------------
     training_args = TrainingArguments(
         output_dir=str(config.OUTPUT_DIR),
         per_device_train_batch_size=config.BATCH_SIZE,
@@ -130,10 +143,12 @@ def train():
         num_train_epochs=config.EPOCHS,
         learning_rate=config.LR,
         warmup_ratio=0.05,
-        eval_strategy="steps", eval_steps=200,
-        save_strategy="steps", save_steps=200,
+        evaluation_strategy="steps",
+        eval_steps=200,
+        save_strategy="steps",
+        save_steps=200,
         logging_steps=50,
-        fp16=(has_cuda and not bf16_ok),
+        fp16=has_cuda and not bf16_ok,
         bf16=bf16_ok,
         report_to="none",
     )
@@ -149,17 +164,14 @@ def train():
     )
 
     trainer.train()
-
-    # ---- save adapter ----------------------------------------------------
     model.save_pretrained(config.OUTPUT_DIR)
     tokenizer.save_pretrained(config.OUTPUT_DIR)
-    print(f"LoRA adapter saved to {config.OUTPUT_DIR}")
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--prepare-data", action="store_true", help="Generate JSONL dataset")
-    parser.add_argument("--train",        action="store_true", help="Run fine‑tuning")
+    parser.add_argument("--prepare-data", action="store_true")
+    parser.add_argument("--train", action="store_true")
     args = parser.parse_args()
 
     if args.prepare_data:
