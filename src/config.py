@@ -15,6 +15,6 @@ OUTPUT_DIR = MODEL_DIR / "mistral-copywriter-lora"
 LR = 3e-5
 BATCH_SIZE = 2
 GRAD_ACCUM = 16
-EPOCHS = 3
+EPOCHS = 5
 MAX_SEQ_LEN = 768
 VALID_SPLIT = 0.1
