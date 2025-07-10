@@ -16,6 +16,11 @@ PROMPT_TEMPLATE = (
     "Kamu adalah host live TikTok Shop yang berbahasa santai. "
     "Berdasarkan detail produk di bawah, buat 1 kalimat promosi singkat, hype, "
     "dan persuasif agar penonton segera beli.\n\n"
+    "Contoh jawaban:\n"
+    "COPY: Sandal kece anti licin wajib punya buat gaya santai kamu!\n"
+    "HOST: Rini\n"
+    "TIME: 18:00-20:00 WIB\n"
+    "BUNDLE: Sandal Jepit Stylish Anti Licin + Topi Keren (diskon 15%)\n\n"
     "Nama Produk   : {name}\n"
     "Harga (diskon): Rp{price:,}\n"
     "Stok Tersisa  : {stock}\n"
@@ -107,11 +112,12 @@ def build_full_dataset():
         disc = random.choice([10, 15, 20])
 
         response = (
-            f"{seg['raw_text'].strip()}\n"
+            f"COPY: {seg['raw_text'].strip()}\n"
             f"HOST: {host_name}\n"
             f"TIME: {jam_str} WIB\n"
             f"BUNDLE: {prod['name']} + {bundling} (diskon {disc}%)"
         )
+
 
         rows.append({"prompt": prompt, "response": response})
 

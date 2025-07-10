@@ -22,7 +22,6 @@ tokenizer = None
 
 
 def wrap_inst(prompt: str, response: str = "") -> str:
-    """Template Mistral-Instruct dengan instruksi empat-baris."""
     return (
         f"<s>[INST] {prompt}\n\n"
         f"Jawablah persis 4 baris dengan format COPY:, HOST:, TIME:, BUNDLE:. [/INST] "
@@ -143,10 +142,6 @@ def train():
         num_train_epochs=config.EPOCHS,
         learning_rate=config.LR,
         warmup_ratio=0.05,
-        evaluation_strategy="steps",
-        eval_steps=200,
-        save_strategy="steps",
-        save_steps=200,
         logging_steps=50,
         fp16=has_cuda and not bf16_ok,
         bf16=bf16_ok,
@@ -157,16 +152,13 @@ def train():
         model=model,
         args=training_args,
         train_dataset=token_ds["train"],
-        eval_dataset=token_ds["validation"],
         data_collator=data_collator,
         tokenizer=tokenizer,
-        compute_metrics=compute_metrics,
     )
 
     trainer.train()
     model.save_pretrained(config.OUTPUT_DIR)
     tokenizer.save_pretrained(config.OUTPUT_DIR)
-
 
 def main():
     parser = argparse.ArgumentParser()
