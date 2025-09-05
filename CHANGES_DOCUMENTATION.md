@@ -47,8 +47,12 @@ TIME: [HH:MM-HH:MM] WIB
 - **wrap_inst()**: Format instruction diubah menjadi "COPY1:, COPY2:, COPY3:, BUNDLE:, TIME:"
 - **compute_metrics()**: Menambah evaluasi untuk 3 copywriting (acc_copy1, acc_copy2, acc_copy3)
 - **Menghapus acc_host** dari metrics
+- **BitsAndBytesConfig**: Diubah dari NF4 ke **8-bit quantization** untuk kualitas lebih baik dengan tetap ringan
 
-### 3. Dataset Generated
+### 3. `inference.py`
+- **BitsAndBytesConfig**: Updated ke 8-bit quantization untuk konsistensi
+
+### 4. Dataset Generated
 - **copy_train.jsonl** & **copy_valid.jsonl**: Format baru dengan 500 samples
 - Setiap sample berisi 3 produk dengan copywriting dan bundling yang realistic
 
