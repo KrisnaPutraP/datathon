@@ -47,10 +47,10 @@ TIME: [HH:MM-HH:MM] WIB
 - **wrap_inst()**: Format instruction diubah menjadi "COPY1:, COPY2:, COPY3:, BUNDLE:, TIME:"
 - **compute_metrics()**: Menambah evaluasi untuk 3 copywriting (acc_copy1, acc_copy2, acc_copy3)
 - **Menghapus acc_host** dari metrics
-- **BitsAndBytesConfig**: Diubah dari NF4 ke **8-bit quantization** untuk kualitas lebih baik dengan tetap ringan
+- **BitsAndBytesConfig**: Diubah dari NF4 ke **FP4 quantization** untuk kualitas lebih baik dan kompatibilitas
 
 ### 3. `inference.py`
-- **BitsAndBytesConfig**: Updated ke 8-bit quantization untuk konsistensi
+- **BitsAndBytesConfig**: Updated ke FP4 quantization untuk konsistensi dan menghindari error SCB
 
 ### 4. Dataset Generated
 - **copy_train.jsonl** & **copy_valid.jsonl**: Format baru dengan 500 samples
@@ -93,3 +93,23 @@ Input 3 produk → Output 3 copywriting + 1 bundling + jam live optimal
 ✅ Utilities: `src/utils.py`
 
 **Status**: Ready for fine-tuning di Colab dengan GPU!
+
+## 🔧 Troubleshooting
+
+### Error: `'Tensor' object has no attribute 'SCB'`
+**Cause**: Konflik antara bitsandbytes version dengan 8-bit quantization dan device_map="auto"
+**Solution**: Gunakan FP4 quantization (lebih baik dari NF4) dengan konfigurasi yang kompatibel:
+```python
+BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_compute_dtype="bfloat16" if bf16_ok else "float16", 
+    bnb_4bit_use_double_quant=True,
+    bnb_4bit_quant_type="fp4",  # FP4 > NF4 dalam kualitas
+)
+```
+
+### Quantization Quality Ranking:
+1. **FP16/BF16** (Best quality, high memory)
+2. **INT8** (Good quality, medium memory) 
+3. **FP4** (Good quality, low memory) ← **Current choice**
+4. **NF4** (Poor quality, low memory)

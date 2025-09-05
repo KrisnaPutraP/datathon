@@ -16,9 +16,10 @@ from src import config
 import train 
 
 bnb_cfg = BitsAndBytesConfig(
-    load_in_8bit=True,  # Gunakan 8-bit untuk kualitas lebih baik
-    llm_int8_enable_fp32_cpu_offload=True,
-    llm_int8_has_fp16_weight=True,
+    load_in_4bit=True,
+    bnb_4bit_compute_dtype=torch.float16,
+    bnb_4bit_use_double_quant=True,
+    bnb_4bit_quant_type="fp4",  # Gunakan fp4 (lebih baik dari nf4)
 )
 
 tokenizer = AutoTokenizer.from_pretrained(config.OUTPUT_DIR)

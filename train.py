@@ -125,11 +125,16 @@ def train():
 
     if has_cuda:
         bnb_cfg = BitsAndBytesConfig(
-            load_in_8bit=True, 
-            llm_int8_enable_fp32_cpu_offload=True,
-            llm_int8_has_fp16_weight=True,
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype="bfloat16" if bf16_ok else "float16",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="fp4",  
         )
-        load_kwargs = dict(quantization_config=bnb_cfg, device_map="auto")
+        load_kwargs = dict(
+            quantization_config=bnb_cfg, 
+            device_map="auto",
+            torch_dtype="auto"
+        )
     else:
         load_kwargs = dict(device_map={"": "cpu"}, torch_dtype=torch.float16)
 
