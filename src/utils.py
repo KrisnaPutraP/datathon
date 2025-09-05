@@ -14,29 +14,37 @@ random.seed(42)
 
 PROMPT_TEMPLATE = (
     "Kamu adalah host live TikTok Shop yang berbahasa santai. "
-    "Berdasarkan detail produk di bawah, buat 1 kalimat promosi singkat, hype, "
-    "dan persuasif agar penonton segera beli.\n\n"
+    "Berdasarkan detail 3 produk di bawah, buat copywriting yang menarik untuk masing-masing produk, "
+    "rekomendasi bundling 2 produk dengan diskon, dan tentukan jam live yang optimal.\n\n"
     "Contoh jawaban:\n"
-    "COPY: Sandal kece anti licin wajib punya buat gaya santai kamu!\n"
-    "HOST: Rini\n"
-    "TIME: 18:00-20:00 WIB\n"
-    "BUNDLE: Sandal Jepit Stylish Anti Licin + Topi Keren (diskon 15%)\n\n"
-    "Nama Produk   : {name}\n"
-    "Harga (diskon): Rp{price:,}\n"
-    "Stok Tersisa  : {stock}\n"
-    "Penonton Live : {viewers}\n"
-    "Event         : {event}\n"
+    "COPY1: Kaos oversize keren banget, cocok buat hangout santai!\n"
+    "COPY2: Kemeja flannel premium, bikin tampilan makin stylish!\n"
+    "COPY3: Celana jeans berkualitas, wajib punya buat koleksi!\n"
+    "BUNDLE: Kaos Oversize + Kemeja Flannel (diskon 20%)\n"
+    "TIME: 19:00-21:00 WIB\n\n"
+    "PRODUK 1:\n"
+    "Nama: {name1}\n"
+    "Harga: Rp{price1:,}\n"
+    "Terjual hari ini: {sold1} pcs\n\n"
+    "PRODUK 2:\n"
+    "Nama: {name2}\n"
+    "Harga: Rp{price2:,}\n"
+    "Terjual hari ini: {sold2} pcs\n\n"
+    "PRODUK 3:\n"
+    "Nama: {name3}\n"
+    "Harga: Rp{price3:,}\n"
+    "Terjual hari ini: {sold3} pcs\n"
 )
 
 
 def _best_host_for_category(session_df, sp_df, hosts_df, products_df):
     """Mapping kategori → host dengan total viewers tertinggi."""
     join = (
-        sp_df.merge(session_df[["session_id", "host_id", "unique_viewers"]], on="session_id")
+        sp_df.merge(session_df[["session_id", "host_id", "avg_viewers"]], on="session_id")
         .merge(products_df[["product_id", "category"]], on="product_id")
     )
-    g = join.groupby(["category", "host_id"]).agg({"unique_viewers": "sum"}).reset_index()
-    idx = g.groupby("category")["unique_viewers"].idxmax()
+    g = join.groupby(["category", "host_id"]).agg({"avg_viewers": "sum"}).reset_index()
+    idx = g.groupby("category")["avg_viewers"].idxmax()
     best = g.loc[idx].merge(hosts_df[["host_id", "name"]], on="host_id")[["category", "name"]]
     return dict(zip(best["category"], best["name"]))
 
@@ -46,11 +54,11 @@ def _best_timeslot_for_category(session_df, sp_df, products_df):
     session_df = session_df.copy()
     session_df["hour"] = pd.to_datetime(session_df["start_ts"]).dt.hour
     join = (
-        sp_df.merge(session_df[["session_id", "hour", "unique_viewers"]], on="session_id")
+        sp_df.merge(session_df[["session_id", "hour", "avg_viewers"]], on="session_id")
         .merge(products_df[["product_id", "category"]], on="product_id")
     )
-    g = join.groupby(["category", "hour"]).agg({"unique_viewers": "median"}).reset_index()
-    idx = g.groupby("category")["unique_viewers"].idxmax()
+    g = join.groupby(["category", "hour"]).agg({"avg_viewers": "median"}).reset_index()
+    idx = g.groupby("category")["avg_viewers"].idxmax()
     best = g.loc[idx][["category", "hour"]]
     return dict(zip(best["category"], best["hour"]))
 
@@ -72,52 +80,97 @@ def _top_cooccurring_pairs(sp_df, products_df):
 
 
 def build_full_dataset():
-    """Buat JSONL prompt-response dengan COPY, HOST, TIME, BUNDLE."""
+    """Buat JSONL prompt-response dengan 3 produk, 3 copywriting, bundling, dan jam live."""
     p = config.DATA_DIR
     products = pd.read_csv(p / "products.csv")
     sessions = pd.read_csv(p / "live_sessions.csv")
     session_prods = pd.read_csv(p / "session_products.csv")
     hosts = pd.read_csv(p / "hosts.csv")
     segments = pd.read_csv(p / "speech_segments.csv.gz")
+    orders = pd.read_csv(p / "orders.csv")
 
-    best_host = _best_host_for_category(sessions, session_prods, hosts, products)
+    # Data preprocessing untuk sales per hari
+    orders['order_date'] = pd.to_datetime(orders['order_ts']).dt.date
+    daily_sales = orders.groupby(['order_date']).size().reset_index(name='daily_orders')
+    
+    # Mapping best timeslots
     best_hour = _best_timeslot_for_category(sessions, session_prods, products)
+    
+    # Get product combinations yang sering muncul bersama
     best_bundle = _top_cooccurring_pairs(session_prods, products)
 
     rows = []
     promo_segs = segments[segments["promo_flag"] == 1]
-    for _, seg in tqdm(promo_segs.iterrows(), total=len(promo_segs)):
-        try:
-            prod_ids = eval(seg["product_refs"], {})
-            prod_id = prod_ids[0] if prod_ids else None
-        except Exception:
-            continue
-        if prod_id is None or prod_id not in best_bundle:
-            continue
-        prod = products.loc[products.product_id == prod_id].iloc[0]
-
+    
+    # Group produk berdasarkan kategori untuk membuat kombinasi yang masuk akal
+    category_products = products.groupby('category')['product_id'].apply(list).to_dict()
+    
+    for _ in tqdm(range(min(500, len(promo_segs))), desc="Building dataset"):
+        # Pilih 3 produk dari kategori yang sama atau related
+        categories = list(category_products.keys())
+        main_category = random.choice(categories)
+        
+        # Ambil 3 produk dari kategori utama atau campuran
+        if len(category_products[main_category]) >= 3:
+            selected_products = random.sample(category_products[main_category], 3)
+        else:
+            # Jika tidak cukup, ambil dari kategori lain juga
+            all_products = []
+            for cat in categories:
+                all_products.extend(category_products[cat])
+            selected_products = random.sample(all_products, 3)
+        
+        # Get product details
+        prod1 = products[products.product_id == selected_products[0]].iloc[0]
+        prod2 = products[products.product_id == selected_products[1]].iloc[0]
+        prod3 = products[products.product_id == selected_products[2]].iloc[0]
+        
+        # Generate sales data (jumlah terjual hari ini)
+        sold1 = random.randint(5, 50)
+        sold2 = random.randint(5, 50)
+        sold3 = random.randint(5, 50)
+        
+        # Create prompt
         prompt = PROMPT_TEMPLATE.format(
-            name=prod["name"],
-            price=int(prod["price"]),
-            stock=int(prod["stock_qty"]),
-            viewers=random.randint(200, 2000),
-            event=random.choice(["flash sale", "bonus ongkir", "diskon kilat"]),
+            name1=prod1["name"],
+            price1=int(prod1["price"]),
+            sold1=sold1,
+            name2=prod2["name"],
+            price2=int(prod2["price"]),
+            sold2=sold2,
+            name3=prod3["name"],
+            price3=int(prod3["price"]),
+            sold3=sold3,
         )
 
-        cat = prod["category"]
-        host_name = best_host.get(cat, random.choice(hosts["name"]))
-        jam = best_hour.get(cat, 19)
-        jam_str = f"{jam:02d}:00-{(jam + 2) % 24:02d}:00"
-        bundling = best_bundle[prod_id]
-        disc = random.choice([10, 15, 20])
+        # Generate copywriting untuk masing-masing produk
+        sample_seg = promo_segs.sample(3)
+        copy1 = sample_seg.iloc[0]['raw_text'].strip()
+        copy2 = sample_seg.iloc[1]['raw_text'].strip()
+        copy3 = sample_seg.iloc[2]['raw_text'].strip()
+        
+        # Pilih 2 produk untuk bundling (yang paling mahal + random)
+        prices = [(prod1["name"], int(prod1["price"])), 
+                 (prod2["name"], int(prod2["price"])), 
+                 (prod3["name"], int(prod3["price"]))]
+        prices.sort(key=lambda x: x[1], reverse=True)
+        
+        # Bundle 2 produk termahal dengan diskon
+        bundle_products = prices[:2]
+        discount = random.choice([15, 20, 25])
+        bundle_text = f"{bundle_products[0][0]} + {bundle_products[1][0]} (diskon {discount}%)"
+        
+        # Generate jam live berdasarkan kategori
+        jam = best_hour.get(main_category, random.randint(18, 21))
+        jam_str = f"{jam:02d}:00-{(jam + 2) % 24:02d}:00 WIB"
 
         response = (
-            f"COPY: {seg['raw_text'].strip()}\n"
-            f"HOST: {host_name}\n"
-            f"TIME: {jam_str} WIB\n"
-            f"BUNDLE: {prod['name']} + {bundling} (diskon {disc}%)"
+            f"COPY1: {copy1}\n"
+            f"COPY2: {copy2}\n"
+            f"COPY3: {copy3}\n"
+            f"BUNDLE: {bundle_text}\n"
+            f"TIME: {jam_str}"
         )
-
 
         rows.append({"prompt": prompt, "response": response})
 

@@ -24,7 +24,7 @@ tokenizer = None
 def wrap_inst(prompt: str, response: str = "") -> str:
     return (
         f"<s>[INST] {prompt}\n\n"
-        f"Jawablah persis 4 baris dengan format COPY:, HOST:, TIME:, BUNDLE:. [/INST] "
+        f"Jawablah dengan format COPY1:, COPY2:, COPY3:, BUNDLE:, TIME:. [/INST] "
         f"{response}</s>"
     )
 
@@ -85,9 +85,19 @@ def compute_metrics(eval_pred):
     preds = logits.argmax(-1)
     pred_text = tokenizer.batch_decode(preds, skip_special_tokens=True)
     label_text = tokenizer.batch_decode(labels, skip_special_tokens=True)
+    
+    # Evaluate copywriting quality menggunakan BERT score
     _, _, f1 = bert_score(_first_line(pred_text), _first_line(label_text), lang="id")
-    acc_host = np.mean(
-        np.array(_field(pred_text, "HOST:")) == np.array(_field(label_text, "HOST:"))
+    
+    # Evaluate accuracy untuk setiap field
+    acc_copy1 = np.mean(
+        np.array(_field(pred_text, "COPY1:")) == np.array(_field(label_text, "COPY1:"))
+    )
+    acc_copy2 = np.mean(
+        np.array(_field(pred_text, "COPY2:")) == np.array(_field(label_text, "COPY2:"))
+    )
+    acc_copy3 = np.mean(
+        np.array(_field(pred_text, "COPY3:")) == np.array(_field(label_text, "COPY3:"))
     )
     acc_time = np.mean(
         np.array(_field(pred_text, "TIME:")) == np.array(_field(label_text, "TIME:"))
@@ -95,9 +105,12 @@ def compute_metrics(eval_pred):
     acc_bundle = np.mean(
         np.array(_field(pred_text, "BUNDLE:")) == np.array(_field(label_text, "BUNDLE:"))
     )
+    
     return {
         "bert_f1": f1.mean().item(),
-        "acc_host": acc_host,
+        "acc_copy1": acc_copy1,
+        "acc_copy2": acc_copy2,
+        "acc_copy3": acc_copy3,
         "acc_time": acc_time,
         "acc_bundle": acc_bundle,
     }
